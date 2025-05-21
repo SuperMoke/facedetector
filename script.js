@@ -1,52 +1,26 @@
 const videoElement = document.getElementById("video");
-videoElement.muted = true;
-videoElement.playsInline = true;
 const canvasElement = document.getElementById("canvas");
 const canvasCtx = canvasElement.getContext("2d");
 
-let url = new URL(window.location.href);
-let params = new URLSearchParams(url.search);
-
-const isFullScreen = params.get("isFullScreen") === "true" || false; // Ensure boolean conversion
-const isBackCamera = params.get("isBackCamera") === "true" || false; // Ensure boolean conversion
-
-if (isFullScreen) {
-  canvasCtx.canvas.width = window.innerWidth;
-  canvasCtx.canvas.height = window.innerHeight;
-  canvasCtx.canvas.style.width = "100vw";
-  canvasCtx.canvas.style.height = "100vh";
-}
-
-function onWindowResized() {
-  if (isFullScreen) {
-    canvasCtx.canvas.width = window.innerWidth;
-    canvasCtx.canvas.height = window.innerHeight;
-    // No need to set style width/height here again if already 100vw/vh
-  }
-}
-
-window.addEventListener("resize", onWindowResized);
-
-let lastTimestamp = performance.now();
-let frameCount = 0;
+// Get URL parameters
+const urlParams = new URLSearchParams(window.location.search);
+const modelSelection = parseInt(urlParams.get("modelSelection") || "0", 10); // 0 for short-range, 1 for full-range
+const minDetectionConfidence = parseFloat(
+  urlParams.get("minDetectionConfidence") || "0.5"
+);
+const isBackCamera = urlParams.get("isBackCamera") === "true";
+const flipHorizontal = urlParams.get("flipHorizontal") === "true"; // For mirroring the drawing
+const isFullScreen = urlParams.get("isFullScreen") === "true";
+const enableDrawing = urlParams.get("enableDrawing") === "true";
+const drawBoundingBoxColor = urlParams.get("drawBoundingBoxColor") || "255,0,0"; // RGB string
+const drawLandmarksColor = urlParams.get("drawLandmarksColor") || "0,255,0"; // RGB string
 
 function onResults(results) {
-  const now = performance.now();
-  const elapsed = now - lastTimestamp;
-  frameCount++;
-
-  if (elapsed > 1000) {
-    lastTimestamp = now;
-    const fps = frameCount / (elapsed / 1000);
-    console.log(`FPS: ${fps.toFixed(2)}`);
-    frameCount = 0;
-  }
-
   canvasCtx.save();
   canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
 
-  // Flip horizontally for mirrored view if using front camera
-  if (!isBackCamera) {
+  // Flip horizontally if front camera and flipHorizontal is true (for selfie view)
+  if (!isBackCamera && flipHorizontal) {
     canvasCtx.translate(canvasElement.width, 0);
     canvasCtx.scale(-1, 1);
   }
@@ -59,88 +33,144 @@ function onResults(results) {
     canvasElement.height
   );
 
-  if (results.multiFaceLandmarks) {
-    for (const landmarks of results.multiFaceLandmarks) {
-      // Send landmarks to React Native WebView if present
-      window?.ReactNativeWebView?.postMessage(JSON.stringify(landmarks));
+  const processedDetections = [];
+  if (results.detections && results.detections.length > 0) {
+    for (const detection of results.detections) {
+      if (enableDrawing) {
+        // drawDetection (from drawing_utils) can draw both bounding box and landmarks
+        // Or use drawRectangle and drawLandmarks separately for more control
+        drawDetection(
+          canvasCtx,
+          detection,
+          {
+            color: `rgb(${drawBoundingBoxColor})`, // For bounding box
+            lineWidth: 2,
+          },
+          {
+            color: `rgb(${drawLandmarksColor})`, // For landmarks
+            radius: 3,
+          }
+        );
+      }
 
-      // Draw the face mesh tesselation
-      drawConnectors(canvasCtx, landmarks, FACEMESH_TESSELATION, {
-        color: "#C0C0C070",
-        lineWidth: 1,
-      }); // Light grey, semi-transparent
-      // Draw specific facial features if desired (example: lips, eyes, irises)
-      drawConnectors(canvasCtx, landmarks, FACEMESH_LIPS, {
-        color: "#E0E0E0",
-        lineWidth: 2,
-      });
-      drawConnectors(canvasCtx, landmarks, FACEMESH_LEFT_EYE, {
-        color: "#FF3030",
-        lineWidth: 2,
-      });
-      drawConnectors(canvasCtx, landmarks, FACEMESH_LEFT_EYEBROW, {
-        color: "#FF3030",
-        lineWidth: 2,
-      });
-      drawConnectors(canvasCtx, landmarks, FACEMESH_LEFT_IRIS, {
-        color: "#FF3030",
-        lineWidth: 1,
-      });
-      drawConnectors(canvasCtx, landmarks, FACEMESH_RIGHT_EYE, {
-        color: "#30FF30",
-        lineWidth: 2,
-      });
-      drawConnectors(canvasCtx, landmarks, FACEMESH_RIGHT_EYEBROW, {
-        color: "#30FF30",
-        lineWidth: 2,
-      });
-      drawConnectors(canvasCtx, landmarks, FACEMESH_RIGHT_IRIS, {
-        color: "#30FF30",
-        lineWidth: 1,
-      });
-      // drawConnectors(canvasCtx, landmarks, FACEMESH_FACE_OVAL, {color: '#E0E0E0', lineWidth: 2}); // Optional: draw face oval
+      // Prepare data for React Native
+      // MediaPipe provides normalized coordinates (0.0 to 1.0)
+      const boundingBox = detection.boundingBox; // { xMin, yMin, width, height, xCenter, yCenter }
+      const landmarks = detection.landmarks.map((lm) => ({ x: lm.x, y: lm.y })); // Array of {x, y}
+      const confidence =
+        detection.score && detection.score.length > 0 ? detection.score[0] : 0;
 
-      // To draw individual landmark points (can be performance intensive for all 468+ points)
-      // drawLandmarks(canvasCtx, landmarks, {color: '#FFFFFF', radius: 0.5});
+      processedDetections.push({
+        boundingBox: {
+          xMin: boundingBox.xMin,
+          yMin: boundingBox.yMin,
+          width: boundingBox.width,
+          height: boundingBox.height,
+          xCenter: boundingBox.xCenter,
+          yCenter: boundingBox.yCenter,
+        },
+        landmarks: landmarks,
+        confidence: confidence,
+      });
     }
+  }
+
+  if (
+    window.ReactNativeWebView &&
+    typeof window.ReactNativeWebView.postMessage === "function"
+  ) {
+    window.ReactNativeWebView.postMessage(JSON.stringify(processedDetections));
+  } else {
+    // console.log("ReactNativeWebView.postMessage is not available. Detections:", processedDetections);
   }
   canvasCtx.restore();
 }
 
-const faceMesh = new FaceMesh({
-  locateFile: (file) => {
-    return `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`;
-  },
+const faceDetection = new FaceDetection({
+  locateFile: (file) =>
+    `https://cdn.jsdelivr.net/npm/@mediapipe/face_detection/${file}`,
 });
 
-faceMesh.setOptions({
-  maxNumFaces: 1, // Detect one face for this example, adjust as needed
-  refineLandmarks: true, // Get more detailed landmark coordinates, e.g., for irises
-  minDetectionConfidence: 0.5,
-  minTrackingConfidence: 0.5,
+faceDetection.setOptions({
+  modelSelection: modelSelection, // 0 for short-range, 1 for full-range
+  minDetectionConfidence: minDetectionConfidence,
 });
 
-faceMesh.onResults(onResults);
+faceDetection.onResults(onResults);
 
 const camera = new Camera(videoElement, {
   onFrame: async () => {
-    await faceMesh.send({ image: videoElement });
+    // Ensure canvas dimensions match video intrinsic dimensions if not fullscreen
+    if (!isFullScreen) {
+      if (videoElement.videoWidth && videoElement.videoHeight) {
+        if (canvasElement.width !== videoElement.videoWidth) {
+          canvasElement.width = videoElement.videoWidth;
+        }
+        if (canvasElement.height !== videoElement.videoHeight) {
+          canvasElement.height = videoElement.videoHeight;
+        }
+      }
+    } else {
+      // Fullscreen logic
+      canvasElement.width = window.innerWidth;
+      canvasElement.height = window.innerHeight;
+    }
+    await faceDetection.send({ image: videoElement });
   },
-  width: 1080, // You might want to use smaller resolutions like 640x480 for better performance
-  height: 720,
+  width: isFullScreen ? window.innerWidth : 640, // Request a reasonable resolution
+  height: isFullScreen ? window.innerHeight : 480,
   facingMode: isBackCamera ? "environment" : "user",
 });
 
 camera
   .start()
   .then(() => {
+    console.log("Camera started successfully");
     if (videoElement.readyState >= 3) {
       // HAVE_FUTURE_DATA or more
-      videoElement.play();
+      videoElement
+        .play()
+        .catch((e) => console.error("Error playing video:", e));
     } else {
-      videoElement.addEventListener("canplay", () => videoElement.play());
+      videoElement.addEventListener("canplay", () => {
+        videoElement
+          .play()
+          .catch((e) => console.error("Error playing video after canplay:", e));
+      });
     }
   })
   .catch((err) => {
-    console.error("Camera start failed:", err);
+    console.error("Error starting camera:", err);
+    if (
+      window.ReactNativeWebView &&
+      typeof window.ReactNativeWebView.postMessage === "function"
+    ) {
+      window.ReactNativeWebView.postMessage(
+        JSON.stringify({ error: "Camera start failed: " + err.message })
+      );
+    }
   });
+
+// Handle window resize for fullscreen mode
+window.addEventListener("resize", () => {
+  if (isFullScreen) {
+    canvasElement.width = window.innerWidth;
+    canvasElement.height = window.innerHeight;
+  }
+});
+
+// Initial setup for fullscreen
+if (isFullScreen) {
+  document.body.style.margin = "0";
+  document.body.style.overflow = "hidden";
+  canvasElement.style.position = "absolute";
+  canvasElement.style.top = "0";
+  canvasElement.style.left = "0";
+  canvasElement.width = window.innerWidth;
+  canvasElement.height = window.innerHeight;
+} else {
+  // If not fullscreen, you might want to set canvas size based on video or fixed values
+  // This is handled in onFrame now, but initial sizing might be good.
+  canvasElement.width = 640;
+  canvasElement.height = 480;
+}

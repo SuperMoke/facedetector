@@ -1,12 +1,24 @@
 body {
-    background-color: #f2f2f2;
-    font-family: 'Roboto', sans-serif;
-    font-size: 16px;
-    font-weight: 400;
-    line-height: 1.5;
-    color: #212529;
-    text-align: left;
     margin: 0;
     padding: 0;
-    overflow-x: hidden;
+    background-color: #333;
+    /* Dark background for better camera visibility if not fullscreen */
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    height: 100vh;
+    overflow: hidden;
+    /* Prevent scrollbars if canvas is larger than body */
+}
+
+.container {
+    position: relative;
+    /* You might want to set explicit dimensions here if not fullscreen
+       or let the canvas itself dictate the size */
+}
+
+#canvas {
+    /* Default styling, will be overridden by JS if fullscreen */
+    /* border: 1px solid red; */
+    /* For debugging layout */
 }
